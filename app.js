@@ -1,5 +1,9 @@
-// Minimal PPL tracker (localStorage). No backend. Conservative suggestions.
-// Data model: weeks[weekStartISO][sessionName] = array of row objects.
+/* Training Tracker (Minimal PPL) — stable build
+   - GitHub Pages friendly (no bundlers)
+   - localStorage memory
+   - conservative suggestions (Feeling + previous RPE)
+   - avoids wiping edits on re-render
+*/
 
 const STORAGE_KEY = "training-tracker-v1";
 
@@ -44,53 +48,65 @@ const PROGRAM = {
 
 const FEELINGS = ["", "Sore", "OK", "Great", "Pain"];
 const ENJOYED = ["", "Yes", "Meh", "No"];
-function currentKey() {
-  return `${weekStartEl.value}|${sessionSelect.value}`;
+
+// ---------------- State ----------------
+function loadState() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { weeks: {}, completedWeeks: [] };
+  } catch {
+    return { weeks: {}, completedWeeks: [] };
+  }
 }
 
-function isoMonday(d = new Date()){
-  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  const day = dt.getUTCDay(); // 0 Sun
-  const diff = (day === 0 ? -6 : 1 - day);
-  dt.setUTCDate(dt.getUTCDate() + diff);
-  return dt.toISOString().slice(0,10);
-}
-
-function addDays(iso, days){
-  const d = new Date(iso+"T00:00:00Z");
-  d.setUTCDate(d.getUTCDate()+days);
-  return d.toISOString().slice(0,10);
-}
-
-function loadState(){
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { weeks:{}, completedWeeks:[] }; }
-  catch { return { weeks:{}, completedWeeks:[] }; }
-}
-function saveState(state){
+function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function roundToInc(value, inc){
-  if (!inc || inc <= 0) return value;
-  return Math.round(value / inc) * inc;
+function isoMonday(d = new Date()) {
+  // Monday in local time, then format YYYY-MM-DD
+  const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = dt.getDay(); // 0 Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  dt.setDate(dt.getDate() + diff);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const da = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
 }
 
-// Conservative step: Feeling + prevRPE
-function stepScore(feeling, prevRpe){
+function addDays(iso, days) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
+}
+
+function roundToInc(value, inc) {
+  const n = Number(value);
+  const step = Number(inc);
+  if (!isFinite(n) || !isFinite(step) || step <= 0) return n;
+  return Math.round(n / step) * step;
+}
+
+function stepScore(feeling, prevRpe) {
   let s = 0;
   if (feeling === "Pain") s -= 2;
   else if (feeling === "Sore") s -= 1;
   else if (feeling === "Great") s += 1;
 
-  if (prevRpe != null && prevRpe !== ""){
+  if (prevRpe !== "" && prevRpe != null) {
     const r = Number(prevRpe);
-    if (r >= 9) s -= 1;
-    else if (r <= 7) s += 1;
+    if (isFinite(r)) {
+      if (r >= 9) s -= 1;
+      else if (r <= 7) s += 1;
+    }
   }
   return s;
 }
 
-function mentorCue(row){
+function mentorCue(row) {
   if (row.enjoyed === "Yes") return "Keep. Good fit.";
   if (row.enjoyed === "No") return "Swap next week — consistency wins.";
   if (row.feeling === "Pain") return "Back off or substitute today.";
@@ -99,74 +115,65 @@ function mentorCue(row){
   return "Stay smooth, leave 1–2 reps.";
 }
 
-function suggest(row, prev){
-  // Returns { suggestedText, suggestedWeight, suggestedReps }
-  if (!prev) return { suggestedText: "New entry: start conservative.", suggestedWeight: "", suggestedReps: "" };
-
-  const s = stepScore(row.feeling, prev.rpe);
-  const min = row.min, max = row.max;
-
-  // reps/time always nudged; weight only if weighted/machine
-  let sugReps = prev.reps;
-  if (s > 0) sugReps = Math.min(max, Number(prev.reps) + 1);
-  if (s < 0) sugReps = Math.max(min, Number(prev.reps) - 1);
-
-  let sugWeight = "";
-  if (row.type === "weighted" || row.type === "machine"){
-    const inc = row.inc || 2.5;
-    const w = Number(prev.weight || 0);
-    const newW = roundToInc(Math.max(0, w + s * inc), inc);
-    sugWeight = isFinite(newW) ? newW : "";
-  }
-
-  let txt = "";
-  if (row.feeling === "Pain") txt = "Back off today.";
-  else if (row.type === "bodyweight" || row.type === "time") txt = "Chase clean reps/time.";
-  else txt = "Conservative overload.";
-
-  return { suggestedText: txt, suggestedWeight: sugWeight, suggestedReps: sugReps };
-}
-
-function getPrevEntry(state, weekStart, session, exercise){
+function getPrevEntry(state, weekStart, session, exercise) {
   const prevWeek = addDays(weekStart, -7);
   const rows = state.weeks?.[prevWeek]?.[session] || [];
   return rows.find(r => r.exercise === exercise) || null;
 }
 
-// UI
-const weekStartEl = document.getElementById("weekStart");
-const sessionSelect = document.getElementById("sessionSelect");
-const loadBtn = document.getElementById("loadTemplate");
-const rowsEl = document.getElementById("rows");
-const saveBtn = document.getElementById("saveBtn");
-const completeWeekBtn = document.getElementById("completeWeekBtn");
-const exportBtn = document.getElementById("exportBtn");
-const importInput = document.getElementById("importInput");
-const resetBtn = document.getElementById("resetBtn");
+function suggest(row, prev) {
+  if (!prev) {
+    return { display: "New: start conservative.", weight: "", reps: "" };
+  }
 
-function fillSessions(){
-  sessionSelect.innerHTML = "";
-  Object.keys(PROGRAM).forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s;
-    opt.textContent = s;
-    sessionSelect.appendChild(opt);
-  });
+  const s = stepScore(row.feeling, prev.rpe);
+  const min = Number(row.min), max = Number(row.max);
+
+  let sugReps = prev.reps;
+  const prevRepsNum = Number(prev.reps);
+  if (isFinite(prevRepsNum) && isFinite(min) && isFinite(max)) {
+    if (s > 0) sugReps = Math.min(max, prevRepsNum + 1);
+    else if (s < 0) sugReps = Math.max(min, prevRepsNum - 1);
+    else sugReps = prevRepsNum;
+  }
+
+  let sugWeight = "";
+  if (row.type === "weighted" || row.type === "machine") {
+    const inc = Number(row.inc) || 2.5;
+    const prevW = Number(prev.weight);
+    if (isFinite(prevW)) {
+      sugWeight = roundToInc(Math.max(0, prevW + s * inc), inc);
+    }
+  }
+
+  let display = "Conservative overload.";
+  if (row.feeling === "Pain") display = "Back off today.";
+  else if (row.type === "bodyweight" || row.type === "time") display = "Chase clean reps/time.";
+
+  return { display, weight: sugWeight, reps: sugReps };
 }
 
-function makeSelect(options, value, className="cellInput cellMid"){
+// ---------------- UI helpers ----------------
+function $(id) {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Missing element #${id}. Check index.html IDs.`);
+  return el;
+}
+
+function makeSelect(options, value, className) {
   const sel = document.createElement("select");
   sel.className = className;
-  options.forEach(o=>{
+  options.forEach(optVal => {
     const opt = document.createElement("option");
-    opt.value = o; opt.textContent = o === "" ? "—" : o;
+    opt.value = optVal;
+    opt.textContent = optVal === "" ? "—" : optVal;
     sel.appendChild(opt);
   });
   sel.value = value ?? "";
   return sel;
 }
 
-function makeInput(value, className="cellInput cellSmall", type="text"){
+function makeInput(value, className, type = "text") {
   const inp = document.createElement("input");
   inp.type = type;
   inp.className = className;
@@ -174,12 +181,8 @@ function makeInput(value, className="cellInput cellSmall", type="text"){
   return inp;
 }
 
-function render(){
-  const state = loadState();
-  const weekStart = weekStartEl.value;
-  const session = sessionSelect.value;
-
-  const base = PROGRAM[session].map(p => ({
+function programBase(session) {
+  return (PROGRAM[session] || []).map(p => ({
     order: p.order,
     exercise: p.exercise,
     type: p.type,
@@ -192,234 +195,156 @@ function render(){
     notes: "",
     min: p.min, max: p.max, inc: p.inc
   }));
+}
 
-  const key = `${weekStart}|${session}`;
+function keyFor(weekStart, session) {
+  return `${weekStart}|${session}`;
+}
 
-  // ✅ Use in-progress rows if we're already editing this same week/session
-  let rows = (window.__currentKey === key && Array.isArray(window.__currentRows) && window.__currentRows.length)
-    ? window.__currentRows
-    : ((state.weeks?.[weekStart]?.[session] && state.weeks[weekStart][session].length)
-        ? state.weeks[weekStart][session]
-        : base);
+// ---------------- Main render ----------------
+let weekStartEl, sessionSelect, rowsEl;
+let loadBtn, saveBtn, completeWeekBtn, exportBtn, importInput, resetBtn;
 
-  window.__currentKey = key;
-  window.__currentRows = rows;
-
-  rowsEl.innerHTML = "";
-
-  rows.forEach((row, idx) => {
-    const prev = getPrevEntry(state, weekStart, session, row.exercise);
-    const sug = suggest(row, prev);
-    const cue = mentorCue(row);
-
-    const tr = document.createElement("tr");
-
-    const needsWeight = (row.type === "weighted" || row.type === "machine");
-    const missingImportant = (needsWeight && row.weight === "") || row.reps === "" || row.rpe === "";
-
-    if (row.feeling === "Pain") tr.classList.add("row-pain");
-    else if (missingImportant) tr.classList.add("row-soft");
-
-    // #
-    let td = document.createElement("td");
-    td.textContent = row.order ?? (idx+1);
-    tr.appendChild(td);
-
-    // Exercise
-    td = document.createElement("td");
-    td.textContent = row.exercise;
-    tr.appendChild(td);
-
-    // Type
-    td = document.createElement("td");
-    td.textContent = row.type;
-    tr.appendChild(td);
-
-    // Sets
-    td = document.createElement("td");
-    const setsInp = makeInput(row.sets, "cellInput cellSmall", "number");
-    setsInp.addEventListener("input", ()=>{ row.sets = setsInp.value; });
-    td.appendChild(setsInp);
-    tr.appendChild(td);
-
-    // Reps/Time
-    td = document.createElement("td");
-    const repsInp = makeInput(row.reps, "cellInput cellSmall", "number");
-    repsInp.addEventListener("input", ()=>{ row.reps = repsInp.value; });
-    td.appendChild(repsInp);
-    tr.appendChild(td);
-
-    // RPE
-    td = document.createElement("td");
-    const rpeInp = makeInput(row.rpe, "cellInput cellSmall", "number");
-    rpeInp.step = "0.5";
-    rpeInp.min = "1"; rpeInp.max = "10";
-    rpeInp.addEventListener("input", ()=>{ row.rpe = rpeInp.value; });
-    td.appendChild(rpeInp);
-    tr.appendChild(td);
-
-    // Weight
-    td = document.createElement("td");
-    const wInp = makeInput(row.weight, "cellInput cellSmall", "number");
-    wInp.step = "0.5";
-    wInp.addEventListener("input", ()=>{ row.weight = wInp.value; });
-    td.appendChild(wInp);
-    tr.appendChild(td);
-
-    // Feeling
-    td = document.createElement("td");
-    const feelSel = makeSelect(FEELINGS, row.feeling, "cellInput cellMid");
-    feelSel.addEventListener("change", ()=>{ row.feeling = feelSel.value; render(); });
-    td.appendChild(feelSel);
-    tr.appendChild(td);
-
-    // Enjoyed
-    td = document.createElement("td");
-    const enjSel = makeSelect(ENJOYED, row.enjoyed, "cellInput cellSmall");
-    enjSel.addEventListener("change", ()=>{ row.enjoyed = enjSel.value; render(); });
-    td.appendChild(enjSel);
-    tr.appendChild(td);
-
-    // Suggested
-    td = document.createElement("td");
-    const parts = [];
-    if (sug.suggestedWeight !== "" && sug.suggestedWeight != null) parts.push(`Wt: ${sug.suggestedWeight}`);
-    if (sug.suggestedReps !== "" && sug.suggestedReps != null) parts.push(`Reps: ${sug.suggestedReps}`);
-    td.textContent = parts.length ? parts.join(" • ") : "—";
-    tr.appendChild(td);
-
-    // Mentor cue
-    td = document.createElement("td");
-    td.textContent = cue;
-    tr.appendChild(td);
-
-    // Notes
-    td = document.createElement("td");
-    const nInp = makeInput(row.notes, "cellInput cellWide", "text");
-    nInp.addEventListener("input", ()=>{ row.notes = nInp.value; });
-    td.appendChild(nInp);
-    tr.appendChild(td);
-
-    rowsEl.appendChild(tr);
+function fillSessions() {
+  sessionSelect.innerHTML = "";
+  Object.keys(PROGRAM).forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    sessionSelect.appendChild(opt);
   });
 }
 
-
-  const existing = state.weeks?.[weekStart]?.[session];
-  const rows = existing && existing.length ? existing : base;
-
-  rowsEl.innerHTML = "";
-
-  rows.forEach((row, idx) => {
-    const prev = getPrevEntry(state, weekStart, session, row.exercise);
-    const sug = suggest(row, prev);
-    const cue = mentorCue(row);
-
-    const tr = document.createElement("tr");
-
-    // soft flags
-    const needsWeight = (row.type === "weighted" || row.type === "machine");
-    const missingImportant = (needsWeight && row.weight === "") || row.reps === "" || row.rpe === "";
-    if (row.feeling === "Pain") tr.classList.add("row-pain");
-    else if (missingImportant) tr.classList.add("row-soft");
-
-    // #
-    let td = document.createElement("td");
-    td.textContent = row.order ?? (idx+1);
-    tr.appendChild(td);
-
-    // Exercise
-    td = document.createElement("td");
-    td.textContent = row.exercise;
-    tr.appendChild(td);
-
-    // Type
-    td = document.createElement("td");
-    td.textContent = row.type;
-    tr.appendChild(td);
-
-    // Sets
-    td = document.createElement("td");
-    const setsInp = makeInput(row.sets, "cellInput cellSmall", "number");
-    setsInp.addEventListener("input", ()=>{ row.sets = setsInp.value; });
-    td.appendChild(setsInp);
-    tr.appendChild(td);
-
-    // Reps/Time
-    td = document.createElement("td");
-    const repsInp = makeInput(row.reps, "cellInput cellSmall", "number");
-    repsInp.addEventListener("input", ()=>{ row.reps = repsInp.value; });
-    td.appendChild(repsInp);
-    tr.appendChild(td);
-
-    // RPE
-    td = document.createElement("td");
-    const rpeInp = makeInput(row.rpe, "cellInput cellSmall", "number");
-    rpeInp.step = "0.5";
-    rpeInp.min = "1"; rpeInp.max = "10";
-    rpeInp.addEventListener("input", ()=>{ row.rpe = rpeInp.value; });
-    td.appendChild(rpeInp);
-    tr.appendChild(td);
-
-    // Weight
-    td = document.createElement("td");
-    const wInp = makeInput(row.weight, "cellInput cellSmall", "number");
-    wInp.step = "0.5";
-    wInp.addEventListener("input", ()=>{ row.weight = wInp.value; });
-    td.appendChild(wInp);
-    tr.appendChild(td);
-
-    // Feeling
-    td = document.createElement("td");
-    const feelSel = makeSelect(FEELINGS, row.feeling, "cellInput cellMid");
-    feelSel.addEventListener("change", ()=>{ row.feeling = feelSel.value; render(); });
-    td.appendChild(feelSel);
-    tr.appendChild(td);
-
-    // Enjoyed
-    td = document.createElement("td");
-    const enjSel = makeSelect(ENJOYED, row.enjoyed, "cellInput cellSmall");
-    enjSel.addEventListener("change", ()=>{ row.enjoyed = enjSel.value; render(); });
-    td.appendChild(enjSel);
-    tr.appendChild(td);
-
-    // Suggested
-    td = document.createElement("td");
-    const parts = [];
-    if (sug.suggestedWeight !== "" && sug.suggestedWeight != null) parts.push(`Wt: ${sug.suggestedWeight}`);
-    if (sug.suggestedReps !== "" && sug.suggestedReps != null) parts.push(`Reps: ${sug.suggestedReps}`);
-    td.textContent = parts.length ? parts.join(" • ") : "—";
-    tr.appendChild(td);
-
-    // Mentor cue
-    td = document.createElement("td");
-    td.textContent = cue;
-    tr.appendChild(td);
-
-    // Notes
-    td = document.createElement("td");
-    const nInp = makeInput(row.notes, "cellInput cellWide", "text");
-    nInp.addEventListener("input", ()=>{ row.notes = nInp.value; });
-    td.appendChild(nInp);
-    tr.appendChild(td);
-
-    rowsEl.appendChild(tr);
-  });
-
-  // Store "current working set" in memory so Save works without re-deriving
-  window.__currentRows = rows;
-}
-
-function save(){
+function render() {
   const state = loadState();
   const weekStart = weekStartEl.value;
   const session = sessionSelect.value;
+
+  const k = keyFor(weekStart, session);
+
+  // Keep in-progress edits for the same week/session.
+  let rows =
+    (window.__currentKey === k && Array.isArray(window.__currentRows) && window.__currentRows.length)
+      ? window.__currentRows
+      : (state.weeks?.[weekStart]?.[session]?.length ? state.weeks[weekStart][session] : programBase(session));
+
+  window.__currentKey = k;
+  window.__currentRows = rows;
+
+  rowsEl.innerHTML = "";
+
+  rows.forEach((row) => {
+    const prev = getPrevEntry(state, weekStart, session, row.exercise);
+    const sug = suggest(row, prev);
+    const cue = mentorCue(row);
+
+    const tr = document.createElement("tr");
+
+    const needsWeight = (row.type === "weighted" || row.type === "machine");
+    const missingImportant =
+      (needsWeight && (row.weight === "" || row.weight == null)) ||
+      (row.reps === "" || row.reps == null) ||
+      (row.rpe === "" || row.rpe == null);
+
+    if (row.feeling === "Pain") tr.classList.add("row-pain");
+    else if (missingImportant) tr.classList.add("row-soft");
+
+    // #
+    let td = document.createElement("td");
+    td.textContent = row.order;
+    tr.appendChild(td);
+
+    // Exercise
+    td = document.createElement("td");
+    td.textContent = row.exercise;
+    tr.appendChild(td);
+
+    // Type
+    td = document.createElement("td");
+    td.textContent = row.type;
+    tr.appendChild(td);
+
+    // Sets
+    td = document.createElement("td");
+    const setsInp = makeInput(row.sets, "cellInput cellSmall", "number");
+    setsInp.addEventListener("input", () => { row.sets = setsInp.value; });
+    td.appendChild(setsInp);
+    tr.appendChild(td);
+
+    // Reps/Time
+    td = document.createElement("td");
+    const repsInp = makeInput(row.reps, "cellInput cellSmall", "number");
+    repsInp.addEventListener("input", () => { row.reps = repsInp.value; });
+    td.appendChild(repsInp);
+    tr.appendChild(td);
+
+    // RPE
+    td = document.createElement("td");
+    const rpeInp = makeInput(row.rpe, "cellInput cellSmall", "number");
+    rpeInp.step = "0.5";
+    rpeInp.min = "1";
+    rpeInp.max = "10";
+    rpeInp.addEventListener("input", () => { row.rpe = rpeInp.value; });
+    td.appendChild(rpeInp);
+    tr.appendChild(td);
+
+    // Weight
+    td = document.createElement("td");
+    const wInp = makeInput(row.weight, "cellInput cellSmall", "number");
+    wInp.step = "0.5";
+    wInp.addEventListener("input", () => { row.weight = wInp.value; });
+    td.appendChild(wInp);
+    tr.appendChild(td);
+
+    // Feeling
+    td = document.createElement("td");
+    const feelSel = makeSelect(FEELINGS, row.feeling, "cellInput cellMid");
+    feelSel.addEventListener("change", () => { row.feeling = feelSel.value; render(); });
+    td.appendChild(feelSel);
+    tr.appendChild(td);
+
+    // Enjoyed
+    td = document.createElement("td");
+    const enjSel = makeSelect(ENJOYED, row.enjoyed, "cellInput cellSmall");
+    enjSel.addEventListener("change", () => { row.enjoyed = enjSel.value; render(); });
+    td.appendChild(enjSel);
+    tr.appendChild(td);
+
+    // Suggested
+    td = document.createElement("td");
+    const parts = [];
+    if (sug.weight !== "" && sug.weight != null && isFinite(Number(sug.weight))) parts.push(`Wt: ${sug.weight}`);
+    if (sug.reps !== "" && sug.reps != null && isFinite(Number(sug.reps))) parts.push(`Reps: ${sug.reps}`);
+    td.textContent = parts.length ? parts.join(" • ") : "—";
+    tr.appendChild(td);
+
+    // Mentor cue
+    td = document.createElement("td");
+    td.textContent = cue;
+    tr.appendChild(td);
+
+    // Notes
+    td = document.createElement("td");
+    const nInp = makeInput(row.notes, "cellInput cellWide", "text");
+    nInp.addEventListener("input", () => { row.notes = nInp.value; });
+    td.appendChild(nInp);
+    tr.appendChild(td);
+
+    rowsEl.appendChild(tr);
+  });
+}
+
+function save() {
+  const state = loadState();
+  const weekStart = weekStartEl.value;
+  const session = sessionSelect.value;
+
   state.weeks[weekStart] = state.weeks[weekStart] || {};
   state.weeks[weekStart][session] = window.__currentRows || [];
   saveState(state);
 }
 
-function markWeekComplete(){
+function markWeekComplete() {
   const state = loadState();
   const weekStart = weekStartEl.value;
   if (!state.completedWeeks.includes(weekStart)) state.completedWeeks.push(weekStart);
@@ -427,9 +352,9 @@ function markWeekComplete(){
   alert("Week marked complete.");
 }
 
-function exportJSON(){
+function exportJSON() {
   const state = loadState();
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type:"application/json" });
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -438,39 +363,79 @@ function exportJSON(){
   URL.revokeObjectURL(url);
 }
 
-function importJSON(file){
+function importJSON(file) {
   const reader = new FileReader();
   reader.onload = () => {
-    try{
+    try {
       const obj = JSON.parse(reader.result);
-      if (!obj.weeks) throw new Error("Invalid file");
+      if (!obj.weeks) throw new Error("Invalid file (missing weeks).");
       saveState(obj);
       alert("Imported.");
+      // reset in-progress cache so it reloads
+      window.__currentKey = "";
+      window.__currentRows = [];
       render();
-    }catch(e){
+    } catch (e) {
       alert("Import failed: " + e.message);
     }
   };
   reader.readAsText(file);
 }
 
-function resetData(){
+function resetData() {
   if (!confirm("Reset local data? This deletes localStorage for this tracker.")) return;
   localStorage.removeItem(STORAGE_KEY);
+  window.__currentKey = "";
+  window.__currentRows = [];
   render();
 }
 
-// init
-fillSessions();
-weekStartEl.value = isoMonday();
-render();
+// If anything crashes, show it on the page instead of blank.
+function showFatal(err) {
+  document.body.innerHTML = `
+    <main style="max-width:900px;margin:30px auto;padding:0 16px;font-family:Georgia,serif;">
+      <h1 style="color:#9b2c2c;">Tracker crashed</h1>
+      <p style="color:#617083;">This usually means a JavaScript error or a missing file reference.</p>
+      <pre style="white-space:pre-wrap;background:#fff;border:1px solid #e6ebf1;padding:14px;border-radius:12px;">${String(err.stack || err)}</pre>
+      <p style="color:#617083;">Fixes to check:</p>
+      <ul style="color:#617083;">
+        <li>File names are exactly: <code>index.html</code>, <code>styles.css</code>, <code>app.js</code></li>
+        <li><code>index.html</code> includes: <code>&lt;script src="./app.js"&gt;&lt;/script&gt;</code></li>
+        <li>Hard refresh (Ctrl+Shift+R)</li>
+      </ul>
+    </main>
+  `;
+}
 
-loadBtn.addEventListener("click", render);
-saveBtn.addEventListener("click", ()=>{ save(); alert("Saved."); });
-completeWeekBtn.addEventListener("click", ()=>{ save(); markWeekComplete(); });
-exportBtn.addEventListener("click", exportJSON);
-importInput.addEventListener("change", (e)=>{ if (e.target.files?.[0]) importJSON(e.target.files[0]); });
-resetBtn.addEventListener("click", resetData);
+(function init() {
+  try {
+    weekStartEl = $("weekStart");
+    sessionSelect = $("sessionSelect");
+    rowsEl = $("rows");
+    loadBtn = $("loadTemplate");
+    saveBtn = $("saveBtn");
+    completeWeekBtn = $("completeWeekBtn");
+    exportBtn = $("exportBtn");
+    importInput = $("importInput");
+    resetBtn = $("resetBtn");
 
-sessionSelect.addEventListener("change", render);
-weekStartEl.addEventListener("change", render);
+    fillSessions();
+    weekStartEl.value = isoMonday();
+    sessionSelect.value = "Push A";
+
+    loadBtn.addEventListener("click", () => { render(); });
+    saveBtn.addEventListener("click", () => { save(); alert("Saved."); });
+    completeWeekBtn.addEventListener("click", () => { save(); markWeekComplete(); });
+    exportBtn.addEventListener("click", exportJSON);
+    importInput.addEventListener("change", (e) => { if (e.target.files?.[0]) importJSON(e.target.files[0]); });
+    resetBtn.addEventListener("click", resetData);
+
+    sessionSelect.addEventListener("change", render);
+    weekStartEl.addEventListener("change", render);
+
+    render();
+  } catch (err) {
+    showFatal(err);
+  }
+})();
+

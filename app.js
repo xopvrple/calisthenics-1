@@ -44,6 +44,9 @@ const PROGRAM = {
 
 const FEELINGS = ["", "Sore", "OK", "Great", "Pain"];
 const ENJOYED = ["", "Yes", "Meh", "No"];
+function currentKey() {
+  return `${weekStartEl.value}|${sessionSelect.value}`;
+}
 
 function isoMonday(d = new Date()){
   const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -189,6 +192,118 @@ function render(){
     notes: "",
     min: p.min, max: p.max, inc: p.inc
   }));
+
+  const key = `${weekStart}|${session}`;
+
+  // ✅ Use in-progress rows if we're already editing this same week/session
+  let rows = (window.__currentKey === key && Array.isArray(window.__currentRows) && window.__currentRows.length)
+    ? window.__currentRows
+    : ((state.weeks?.[weekStart]?.[session] && state.weeks[weekStart][session].length)
+        ? state.weeks[weekStart][session]
+        : base);
+
+  window.__currentKey = key;
+  window.__currentRows = rows;
+
+  rowsEl.innerHTML = "";
+
+  rows.forEach((row, idx) => {
+    const prev = getPrevEntry(state, weekStart, session, row.exercise);
+    const sug = suggest(row, prev);
+    const cue = mentorCue(row);
+
+    const tr = document.createElement("tr");
+
+    const needsWeight = (row.type === "weighted" || row.type === "machine");
+    const missingImportant = (needsWeight && row.weight === "") || row.reps === "" || row.rpe === "";
+
+    if (row.feeling === "Pain") tr.classList.add("row-pain");
+    else if (missingImportant) tr.classList.add("row-soft");
+
+    // #
+    let td = document.createElement("td");
+    td.textContent = row.order ?? (idx+1);
+    tr.appendChild(td);
+
+    // Exercise
+    td = document.createElement("td");
+    td.textContent = row.exercise;
+    tr.appendChild(td);
+
+    // Type
+    td = document.createElement("td");
+    td.textContent = row.type;
+    tr.appendChild(td);
+
+    // Sets
+    td = document.createElement("td");
+    const setsInp = makeInput(row.sets, "cellInput cellSmall", "number");
+    setsInp.addEventListener("input", ()=>{ row.sets = setsInp.value; });
+    td.appendChild(setsInp);
+    tr.appendChild(td);
+
+    // Reps/Time
+    td = document.createElement("td");
+    const repsInp = makeInput(row.reps, "cellInput cellSmall", "number");
+    repsInp.addEventListener("input", ()=>{ row.reps = repsInp.value; });
+    td.appendChild(repsInp);
+    tr.appendChild(td);
+
+    // RPE
+    td = document.createElement("td");
+    const rpeInp = makeInput(row.rpe, "cellInput cellSmall", "number");
+    rpeInp.step = "0.5";
+    rpeInp.min = "1"; rpeInp.max = "10";
+    rpeInp.addEventListener("input", ()=>{ row.rpe = rpeInp.value; });
+    td.appendChild(rpeInp);
+    tr.appendChild(td);
+
+    // Weight
+    td = document.createElement("td");
+    const wInp = makeInput(row.weight, "cellInput cellSmall", "number");
+    wInp.step = "0.5";
+    wInp.addEventListener("input", ()=>{ row.weight = wInp.value; });
+    td.appendChild(wInp);
+    tr.appendChild(td);
+
+    // Feeling
+    td = document.createElement("td");
+    const feelSel = makeSelect(FEELINGS, row.feeling, "cellInput cellMid");
+    feelSel.addEventListener("change", ()=>{ row.feeling = feelSel.value; render(); });
+    td.appendChild(feelSel);
+    tr.appendChild(td);
+
+    // Enjoyed
+    td = document.createElement("td");
+    const enjSel = makeSelect(ENJOYED, row.enjoyed, "cellInput cellSmall");
+    enjSel.addEventListener("change", ()=>{ row.enjoyed = enjSel.value; render(); });
+    td.appendChild(enjSel);
+    tr.appendChild(td);
+
+    // Suggested
+    td = document.createElement("td");
+    const parts = [];
+    if (sug.suggestedWeight !== "" && sug.suggestedWeight != null) parts.push(`Wt: ${sug.suggestedWeight}`);
+    if (sug.suggestedReps !== "" && sug.suggestedReps != null) parts.push(`Reps: ${sug.suggestedReps}`);
+    td.textContent = parts.length ? parts.join(" • ") : "—";
+    tr.appendChild(td);
+
+    // Mentor cue
+    td = document.createElement("td");
+    td.textContent = cue;
+    tr.appendChild(td);
+
+    // Notes
+    td = document.createElement("td");
+    const nInp = makeInput(row.notes, "cellInput cellWide", "text");
+    nInp.addEventListener("input", ()=>{ row.notes = nInp.value; });
+    td.appendChild(nInp);
+    tr.appendChild(td);
+
+    rowsEl.appendChild(tr);
+  });
+}
+
 
   const existing = state.weeks?.[weekStart]?.[session];
   const rows = existing && existing.length ? existing : base;

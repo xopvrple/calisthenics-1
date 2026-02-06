@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Training Tracker</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="top">
+      <div>
+        <h1>Training Tracker</h1>
+        <p class="sub">Minimal • PPL • remembers last week</p>
+      </div>
+      <div class="controls">
+        <label class="field">
+          <span>Week start (Mon)</span>
+          <input id="weekStart" type="date" />
+        </label>
+
+        <label class="field">
+          <span>Session</span>
+          <select id="sessionSelect"></select>
+        </label>
+
+        <button id="loadTemplate" class="btn">Load</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="bar">
+        <div class="legend">
+          <span class="dot dot-soft"></span> soft flag = missing important input
+          <span class="dot dot-pain"></span> pain = back off
+        </div>
+
+        <div class="bar-actions">
+          <button id="saveBtn" class="btn">Save</button>
+          <button id="completeWeekBtn" class="btn btn-ghost">Mark week complete</button>
+        </div>
+      </div>
+
+      <div class="tableWrap">
+        <table id="trackerTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Exercise</th>
+              <th>Type</th>
+              <th>Sets</th>
+              <th>Reps/Time</th>
+              <th>RPE</th>
+              <th>Weight</th>
+              <th>Feeling</th>
+              <th>Enjoyed</th>
+              <th>Suggested</th>
+              <th>Mentor cue</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="bar">
+        <h2 class="h2">Data</h2>
+        <div class="bar-actions">
+          <button id="exportBtn" class="btn btn-ghost">Export JSON</button>
+          <label class="btn btn-ghost fileBtn">
+            Import JSON
+            <input id="importInput" type="file" accept="application/json" />
+          </label>
+          <button id="resetBtn" class="btn btn-danger">Reset local data</button>
+        </div>
+      </div>
+      <p class="sub small">
+        Data is saved locally in this browser (localStorage). Export JSON occasionally if you want a backup.
+      </p>
+    </section>
+
+    <footer class="foot">
+      <span>Georgia font • soft UI • no noise</span>
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -1,12 +1,13 @@
-/* Training Tracker (Minimal PPL) — RP-style per-set weights + per-set RPE
+/* Training Tracker (Minimal PPL) — RP-style per-set: reps + rpe + weight + feeling
    - localStorage
-   - per-set weights: row.weights = ["40","42.5","42.5"]
-   - per-set rpe:     row.rpes    = ["7","8","8"]
-   - Suggestions use last week's TOP SET weight + TOP SET RPE + today's Feeling
-   - Preserves in-progress edits on re-render
+   - per-set reps:     row.repsets  = ["6","6","5"]
+   - per-set rpe:      row.rpes     = ["7.5","8","8.5"]
+   - per-set weights:  row.weights  = ["40","42.5","42.5"]
+   - per-set feelings: row.feelings = ["OK","OK","Sore"]
+   - Suggestions use last week's TOP SET (highest weight) + that set's RPE + today's *set feelings* (summarised)
 */
 
-const STORAGE_KEY = "training-tracker-v3-per-set-weights-rpe";
+const STORAGE_KEY = "training-tracker-v4-per-set-everything";
 
 const PROGRAM = {
   "Push A": [
@@ -47,10 +48,10 @@ const PROGRAM = {
   ],
 };
 
-const FEELINGS = ["", "Sore", "OK", "Great", "Pain"];
+const SET_FEELINGS = ["", "Sore", "OK", "Great", "Pain"];
 const ENJOYED = ["", "Yes", "Meh", "No"];
 
-// ---------------- State ----------------
+// ---------------- storage ----------------
 function loadState() {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { weeks: {}, completedWeeks: [] };
@@ -58,10 +59,9 @@ function loadState() {
     return { weeks: {}, completedWeeks: [] };
   }
 }
-function saveState(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
+function saveState(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
+// ---------------- date helpers ----------------
 function isoMonday(d = new Date()) {
   const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const day = dt.getDay();
@@ -72,7 +72,6 @@ function isoMonday(d = new Date()) {
   const da = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${da}`;
 }
-
 function addDays(iso, days) {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + days);
@@ -82,79 +81,60 @@ function addDays(iso, days) {
   return `${y}-${m}-${da}`;
 }
 
+// ---------------- numeric helpers ----------------
+function toNum(x) { const n = Number(x); return isFinite(n) ? n : null; }
 function roundToInc(value, inc) {
-  const n = Number(value);
-  const step = Number(inc);
+  const n = Number(value), step = Number(inc);
   if (!isFinite(n) || !isFinite(step) || step <= 0) return n;
   return Math.round(n / step) * step;
 }
-function toNum(x) {
-  const n = Number(x);
-  return isFinite(n) ? n : null;
-}
 
-// Find top-set index by max weight (first max if tie)
+// top set = highest weight (if no weights, fallback to first set)
 function topSetIndex(row) {
-  if (!row || !Array.isArray(row.weights)) return null;
-  const nums = row.weights.map(toNum);
-  const valid = nums.map((v, i) => ({ v, i })).filter(o => o.v != null);
-  if (!valid.length) return null;
+  const w = Array.isArray(row.weights) ? row.weights.map(toNum) : [];
+  const valid = w.map((v, i) => ({ v, i })).filter(o => o.v != null);
+  if (!valid.length) return 0;
   let best = valid[0];
   for (const o of valid) if (o.v > best.v) best = o;
   return best.i;
 }
 function topSetWeight(row) {
   const i = topSetIndex(row);
-  if (i == null) return null;
-  return toNum(row.weights[i]);
+  const w = Array.isArray(row.weights) ? toNum(row.weights[i]) : null;
+  return w;
 }
 function topSetRpe(row) {
   const i = topSetIndex(row);
-  if (i == null) return null;
-  if (!Array.isArray(row.rpes)) return null;
-  return toNum(row.rpes[i]);
+  const r = Array.isArray(row.rpes) ? toNum(row.rpes[i]) : null;
+  return r;
+}
+function anyWeight(row) {
+  if (!Array.isArray(row.weights)) return false;
+  return row.weights.map(toNum).some(v => v != null);
+}
+function anyReps(row) {
+  if (!Array.isArray(row.repsets)) return false;
+  return row.repsets.map(toNum).some(v => v != null);
+}
+function allRpeFilled(row, setsCount) {
+  return Array.isArray(row.rpes) && row.rpes.length === setsCount && row.rpes.every(v => v !== "" && v != null);
+}
+function allRepsFilled(row, setsCount) {
+  return Array.isArray(row.repsets) && row.repsets.length === setsCount && row.repsets.every(v => v !== "" && v != null);
 }
 
-// Backward compatibility + ensure arrays match set count
-function normalizeRow(row) {
-  if (!row) return row;
-
-  const setsCount = Math.max(1, Number(row.sets) || 1);
-
-  // weights
-  if (!Array.isArray(row.weights)) row.weights = [];
-  if (row.weight !== undefined && row.weight !== "" && row.weights.length === 0) {
-    const w = Number(row.weight);
-    row.weights = Array.from({ length: setsCount }, () => (isFinite(w) ? String(w) : ""));
-    delete row.weight;
-  } else if (row.weight !== undefined) {
-    delete row.weight;
-  }
-  if (row.weights.length < setsCount) row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
-  if (row.weights.length > setsCount) row.weights = row.weights.slice(0, setsCount);
-
-  // rpes
-  if (!Array.isArray(row.rpes)) row.rpes = [];
-  if (row.rpe !== undefined && row.rpe !== "" && row.rpes.length === 0) {
-    const r = Number(row.rpe);
-    row.rpes = Array.from({ length: setsCount }, () => (isFinite(r) ? String(r) : ""));
-    delete row.rpe;
-  } else if (row.rpe !== undefined) {
-    delete row.rpe;
-  }
-  if (row.rpes.length < setsCount) row.rpes = row.rpes.concat(Array.from({ length: setsCount - row.rpes.length }, () => ""));
-  if (row.rpes.length > setsCount) row.rpes = row.rpes.slice(0, setsCount);
-
-  return row;
+// Summarise set feelings into one score for progression (RP-ish)
+function feelingScoreFromSets(row) {
+  if (!Array.isArray(row.feelings) || !row.feelings.length) return 0;
+  // If any Pain -> -2, else if any Sore -> -1, else if any Great -> +1, else 0
+  if (row.feelings.some(f => f === "Pain")) return -2;
+  if (row.feelings.some(f => f === "Sore")) return -1;
+  if (row.feelings.some(f => f === "Great")) return +1;
+  return 0;
 }
 
-function stepScore(feeling, prevTopRpe) {
-  let s = 0;
-  if (feeling === "Pain") s -= 2;
-  else if (feeling === "Sore") s -= 1;
-  else if (feeling === "Great") s += 1;
-
-  // Use last week's TOP SET RPE
+function stepScore(setFeelingScore, prevTopRpe) {
+  let s = setFeelingScore;
   if (prevTopRpe != null) {
     const r = Number(prevTopRpe);
     if (isFinite(r)) {
@@ -168,10 +148,82 @@ function stepScore(feeling, prevTopRpe) {
 function mentorCue(row) {
   if (row.enjoyed === "Yes") return "Keep. Good fit.";
   if (row.enjoyed === "No") return "Swap next week — consistency wins.";
-  if (row.feeling === "Pain") return "Back off or substitute today.";
-  if (row.exercise === "Muscle-ups" || row.exercise === "90° Holds") return "Quality work: stop before slowdown.";
-  if (row.feeling === "Great") return "Green light: follow suggestion.";
-  return "Stay smooth, leave 1–2 reps.";
+  if (Array.isArray(row.feelings) && row.feelings.includes("Pain")) return "Pain set logged: back off or substitute.";
+  if (row.exercise === "Muscle-ups" || row.exercise === "90° Holds") return "Quality > grind.";
+  return "Smooth reps, leave 0–2 in the tank.";
+}
+
+// ---------------- backward compat + shape ----------------
+function normalizeRow(row) {
+  if (!row) return row;
+  const setsCount = Math.max(1, Number(row.sets) || 1);
+
+  // repsets (upgrade from old single reps)
+  if (!Array.isArray(row.repsets)) row.repsets = [];
+  if (row.reps !== undefined && row.reps !== "" && row.repsets.length === 0) {
+    const r = Number(row.reps);
+    row.repsets = Array.from({ length: setsCount }, () => (isFinite(r) ? String(r) : ""));
+    delete row.reps;
+  } else if (row.reps !== undefined) {
+    delete row.reps;
+  }
+
+  // rpes (upgrade from old single rpe)
+  if (!Array.isArray(row.rpes)) row.rpes = [];
+  if (row.rpe !== undefined && row.rpe !== "" && row.rpes.length === 0) {
+    const rp = Number(row.rpe);
+    row.rpes = Array.from({ length: setsCount }, () => (isFinite(rp) ? String(rp) : ""));
+    delete row.rpe;
+  } else if (row.rpe !== undefined) {
+    delete row.rpe;
+  }
+
+  // weights (upgrade from old single weight)
+  if (!Array.isArray(row.weights)) row.weights = [];
+  if (row.weight !== undefined && row.weight !== "" && row.weights.length === 0) {
+    const w = Number(row.weight);
+    row.weights = Array.from({ length: setsCount }, () => (isFinite(w) ? String(w) : ""));
+    delete row.weight;
+  } else if (row.weight !== undefined) {
+    delete row.weight;
+  }
+
+  // feelings per set
+  if (!Array.isArray(row.feelings)) row.feelings = [];
+
+  // ensure lengths
+  const ensureLen = (arr, fill) => {
+    if (arr.length < setsCount) arr = arr.concat(Array.from({ length: setsCount - arr.length }, () => fill));
+    if (arr.length > setsCount) arr = arr.slice(0, setsCount);
+    return arr;
+  };
+  row.repsets = ensureLen(row.repsets, "");
+  row.rpes = ensureLen(row.rpes, "");
+  row.weights = ensureLen(row.weights, "");
+  row.feelings = ensureLen(row.feelings, "");
+
+  return row;
+}
+
+function programBase(session) {
+  return (PROGRAM[session] || []).map(p => {
+    const setsCount = Math.max(1, Number(p.sets) || 1);
+    return {
+      order: p.order,
+      exercise: p.exercise,
+      type: p.type,
+      sets: p.sets,
+      repsets: Array.from({ length: setsCount }, () => String(p.reps ?? "")),
+      rpes: Array.from({ length: setsCount }, () => String(p.rpe ?? "")),
+      weights: Array.from({ length: setsCount }, () => ""),
+      feelings: Array.from({ length: setsCount }, () => ""),
+      enjoyed: "",
+      notes: "",
+      min: p.min,
+      max: p.max,
+      inc: p.inc
+    };
+  });
 }
 
 function getPrevEntry(state, weekStart, session, exercise) {
@@ -185,21 +237,23 @@ function suggest(row, prev) {
 
   prev = normalizeRow(prev);
 
-  const prevTopR = topSetRpe(prev);      // top set RPE
-  const prevTopW = topSetWeight(prev);   // top set weight
-  const s = stepScore(row.feeling, prevTopR);
+  const prevTopR = topSetRpe(prev);
+  const prevTopW = topSetWeight(prev);
+  const feelingScore = feelingScoreFromSets(row);       // from THIS week’s set feelings
+  const s = stepScore(feelingScore, prevTopR);
 
-  // Reps/Time suggestion
+  // reps suggestion uses last week top set reps
   const min = Number(row.min), max = Number(row.max);
-  let sugReps = prev.reps;
-  const prevRepsNum = Number(prev.reps);
-  if (isFinite(prevRepsNum) && isFinite(min) && isFinite(max)) {
-    if (s > 0) sugReps = Math.min(max, prevRepsNum + 1);
-    else if (s < 0) sugReps = Math.max(min, prevRepsNum - 1);
-    else sugReps = prevRepsNum;
+  let sugReps = "";
+  const idx = topSetIndex(prev);
+  const prevTopReps = Array.isArray(prev.repsets) ? toNum(prev.repsets[idx]) : null;
+  if (prevTopReps != null && isFinite(min) && isFinite(max)) {
+    if (s > 0) sugReps = Math.min(max, prevTopReps + 1);
+    else if (s < 0) sugReps = Math.max(min, prevTopReps - 1);
+    else sugReps = prevTopReps;
   }
 
-  // Top set weight suggestion for weighted/machine
+  // weight suggestion for weighted/machine uses last week top set weight
   let sugTop = "";
   if ((row.type === "weighted" || row.type === "machine") && prevTopW != null) {
     const inc = Number(row.inc) || 2.5;
@@ -215,18 +269,6 @@ function $(id) {
   if (!el) throw new Error(`Missing element #${id}. Check index.html IDs.`);
   return el;
 }
-function makeSelect(options, value, className) {
-  const sel = document.createElement("select");
-  sel.className = className;
-  options.forEach(optVal => {
-    const opt = document.createElement("option");
-    opt.value = optVal;
-    opt.textContent = optVal === "" ? "—" : optVal;
-    sel.appendChild(opt);
-  });
-  sel.value = value ?? "";
-  return sel;
-}
 function makeInput(value, className, type = "text") {
   const inp = document.createElement("input");
   inp.type = type;
@@ -234,32 +276,21 @@ function makeInput(value, className, type = "text") {
   inp.value = value ?? "";
   return inp;
 }
-
-function programBase(session) {
-  return (PROGRAM[session] || []).map(p => {
-    const setsCount = Math.max(1, Number(p.sets) || 1);
-    return {
-      order: p.order,
-      exercise: p.exercise,
-      type: p.type,
-      sets: p.sets,
-      reps: p.reps,
-      weights: Array.from({ length: setsCount }, () => ""),
-      rpes: Array.from({ length: setsCount }, () => String(p.rpe ?? "")),
-      feeling: "",
-      enjoyed: "",
-      notes: "",
-      min: p.min,
-      max: p.max,
-      inc: p.inc
-    };
+function makeSelect(options, value, className) {
+  const sel = document.createElement("select");
+  sel.className = className;
+  options.forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v === "" ? "—" : v;
+    sel.appendChild(opt);
   });
+  sel.value = value ?? "";
+  return sel;
 }
-function keyFor(weekStart, session) {
-  return `${weekStart}|${session}`;
-}
+function keyFor(weekStart, session) { return `${weekStart}|${session}`; }
 
-// ---------------- Main render ----------------
+// ---------------- main render ----------------
 let weekStartEl, sessionSelect, rowsEl;
 let loadBtn, saveBtn, completeWeekBtn, exportBtn, importInput, resetBtn;
 
@@ -296,36 +327,21 @@ function render() {
     const cue = mentorCue(row);
 
     const tr = document.createElement("tr");
-
     const setsCount = Math.max(1, Number(row.sets) || 1);
 
     const needsWeight = (row.type === "weighted" || row.type === "machine");
-    const hasAnyWeight = topSetWeight(row) != null;
-
-    const allRpeFilled = Array.isArray(row.rpes) && row.rpes.length === setsCount && row.rpes.every(v => v !== "" && v != null);
-
     const missingImportant =
-      (needsWeight && !hasAnyWeight) ||
-      (row.reps === "" || row.reps == null) ||
-      (!allRpeFilled);
+      (!allRepsFilled(row, setsCount)) ||
+      (!allRpeFilled(row, setsCount)) ||
+      (needsWeight && !anyWeight(row));
 
-    if (row.feeling === "Pain") tr.classList.add("row-pain");
+    if (Array.isArray(row.feelings) && row.feelings.includes("Pain")) tr.classList.add("row-pain");
     else if (missingImportant) tr.classList.add("row-soft");
 
-    // #
-    let td = document.createElement("td");
-    td.textContent = row.order;
-    tr.appendChild(td);
-
-    // Exercise
-    td = document.createElement("td");
-    td.textContent = row.exercise;
-    tr.appendChild(td);
-
-    // Type
-    td = document.createElement("td");
-    td.textContent = row.type;
-    tr.appendChild(td);
+    // #, Exercise, Type
+    let td = document.createElement("td"); td.textContent = row.order; tr.appendChild(td);
+    td = document.createElement("td"); td.textContent = row.exercise; tr.appendChild(td);
+    td = document.createElement("td"); td.textContent = row.type; tr.appendChild(td);
 
     // Sets
     td = document.createElement("td");
@@ -339,11 +355,23 @@ function render() {
     td.appendChild(setsInp);
     tr.appendChild(td);
 
-    // Reps/Time
+    // Reps per set (for 90° holds enter seconds; label still "Reps")
     td = document.createElement("td");
-    const repsInp = makeInput(row.reps, "cellInput cellSmall", "number");
-    repsInp.addEventListener("input", () => { row.reps = repsInp.value; });
-    td.appendChild(repsInp);
+    const repBox = document.createElement("div");
+    repBox.className = "setReps";
+
+    row.repsets = Array.isArray(row.repsets) ? row.repsets : [];
+    if (row.repsets.length < setsCount) row.repsets = row.repsets.concat(Array.from({ length: setsCount - row.repsets.length }, () => ""));
+    if (row.repsets.length > setsCount) row.repsets = row.repsets.slice(0, setsCount);
+
+    for (let si = 0; si < setsCount; si++) {
+      const v = row.repsets[si] ?? "";
+      const inp = makeInput(v, "cellInput cellSmall", "number");
+      inp.placeholder = row.type === "time" ? `sec${si+1}` : `Re${si+1}`;
+      inp.addEventListener("input", () => { row.repsets[si] = inp.value; });
+      repBox.appendChild(inp);
+    }
+    td.appendChild(repBox);
     tr.appendChild(td);
 
     // RPE per set
@@ -351,24 +379,18 @@ function render() {
     const rpeBox = document.createElement("div");
     rpeBox.className = "setRpes";
 
-    // ensure length
     row.rpes = Array.isArray(row.rpes) ? row.rpes : [];
     if (row.rpes.length < setsCount) row.rpes = row.rpes.concat(Array.from({ length: setsCount - row.rpes.length }, () => ""));
     if (row.rpes.length > setsCount) row.rpes = row.rpes.slice(0, setsCount);
 
     for (let si = 0; si < setsCount; si++) {
-      const r = row.rpes[si] ?? "";
-      const rInp = makeInput(r, "cellInput cellSmall", "number");
-      rInp.step = "0.5";
-      rInp.min = "1";
-      rInp.max = "10";
-      rInp.placeholder = `R${si + 1}`;
-      rInp.addEventListener("input", () => {
-        row.rpes[si] = rInp.value;
-      });
-      rpeBox.appendChild(rInp);
+      const v = row.rpes[si] ?? "";
+      const inp = makeInput(v, "cellInput cellSmall", "number");
+      inp.step = "0.5"; inp.min = "1"; inp.max = "10";
+      inp.placeholder = `R${si+1}`;
+      inp.addEventListener("input", () => { row.rpes[si] = inp.value; });
+      rpeBox.appendChild(inp);
     }
-
     td.appendChild(rpeBox);
     tr.appendChild(td);
 
@@ -382,27 +404,35 @@ function render() {
     if (row.weights.length > setsCount) row.weights = row.weights.slice(0, setsCount);
 
     for (let si = 0; si < setsCount; si++) {
-      const w = row.weights[si] ?? "";
-      const wInp = makeInput(w, "cellInput cellSmall", "number");
-      wInp.step = "0.5";
-      wInp.placeholder = `S${si + 1}`;
-      wInp.addEventListener("input", () => {
-        row.weights[si] = wInp.value;
-      });
-      wBox.appendChild(wInp);
+      const v = row.weights[si] ?? "";
+      const inp = makeInput(v, "cellInput cellSmall", "number");
+      inp.step = "0.5";
+      inp.placeholder = `S${si+1}`;
+      inp.addEventListener("input", () => { row.weights[si] = inp.value; });
+      wBox.appendChild(inp);
     }
-
     td.appendChild(wBox);
     tr.appendChild(td);
 
-    // Feeling
+    // Feeling per set
     td = document.createElement("td");
-    const feelSel = makeSelect(FEELINGS, row.feeling, "cellInput cellMid");
-    feelSel.addEventListener("change", () => { row.feeling = feelSel.value; render(); });
-    td.appendChild(feelSel);
+    const fBox = document.createElement("div");
+    fBox.className = "setFeelings";
+
+    row.feelings = Array.isArray(row.feelings) ? row.feelings : [];
+    if (row.feelings.length < setsCount) row.feelings = row.feelings.concat(Array.from({ length: setsCount - row.feelings.length }, () => ""));
+    if (row.feelings.length > setsCount) row.feelings = row.feelings.slice(0, setsCount);
+
+    for (let si = 0; si < setsCount; si++) {
+      const sel = makeSelect(SET_FEELINGS, row.feelings[si] ?? "", "cellInput cellMid");
+      sel.title = `Set ${si+1} feeling`;
+      sel.addEventListener("change", () => { row.feelings[si] = sel.value; render(); });
+      fBox.appendChild(sel);
+    }
+    td.appendChild(fBox);
     tr.appendChild(td);
 
-    // Enjoyed
+    // Enjoyed (exercise-level)
     td = document.createElement("td");
     const enjSel = makeSelect(ENJOYED, row.enjoyed, "cellInput cellSmall");
     enjSel.addEventListener("change", () => { row.enjoyed = enjSel.value; render(); });
@@ -412,12 +442,8 @@ function render() {
     // Suggested
     td = document.createElement("td");
     const parts = [];
-    if ((row.type === "weighted" || row.type === "machine") && sug.topWeight !== "" && sug.topWeight != null) {
-      parts.push(`Top Wt: ${sug.topWeight}`);
-    }
-    if (sug.reps !== "" && sug.reps != null && isFinite(Number(sug.reps))) {
-      parts.push(`Reps: ${sug.reps}`);
-    }
+    if ((row.type === "weighted" || row.type === "machine") && sug.topWeight !== "" && sug.topWeight != null) parts.push(`Top Wt: ${sug.topWeight}`);
+    if (sug.reps !== "" && sug.reps != null && isFinite(Number(sug.reps))) parts.push(`Top Reps: ${sug.reps}`);
     td.textContent = parts.length ? parts.join(" • ") : "—";
     tr.appendChild(td);
 
@@ -441,10 +467,8 @@ function save() {
   const state = loadState();
   const weekStart = weekStartEl.value;
   const session = sessionSelect.value;
-
   state.weeks[weekStart] = state.weeks[weekStart] || {};
-  const rows = (window.__currentRows || []).map(r => normalizeRow(r));
-  state.weeks[weekStart][session] = rows;
+  state.weeks[weekStart][session] = (window.__currentRows || []).map(r => normalizeRow(r));
   saveState(state);
 }
 

@@ -1,12 +1,12 @@
-/* Training Tracker (Minimal PPL) — RP-style per-set weights
-   - GitHub Pages friendly
-   - localStorage memory
+/* Training Tracker (Minimal PPL) — RP-style per-set weights + per-set RPE
+   - localStorage
    - per-set weights: row.weights = ["40","42.5","42.5"]
-   - conservative suggestions using last week's Top Set + Feeling + previous RPE
-   - preserves in-progress edits on re-render
+   - per-set rpe:     row.rpes    = ["7","8","8"]
+   - Suggestions use last week's TOP SET weight + TOP SET RPE + today's Feeling
+   - Preserves in-progress edits on re-render
 */
 
-const STORAGE_KEY = "training-tracker-v2-per-set-weights";
+const STORAGE_KEY = "training-tracker-v3-per-set-weights-rpe";
 
 const PROGRAM = {
   "Push A": [
@@ -58,14 +58,13 @@ function loadState() {
     return { weeks: {}, completedWeeks: [] };
   }
 }
-
 function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function isoMonday(d = new Date()) {
   const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const day = dt.getDay(); // 0 Sun
+  const day = dt.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   dt.setDate(dt.getDate() + diff);
   const y = dt.getFullYear();
@@ -89,56 +88,75 @@ function roundToInc(value, inc) {
   if (!isFinite(n) || !isFinite(step) || step <= 0) return n;
   return Math.round(n / step) * step;
 }
-
 function toNum(x) {
   const n = Number(x);
   return isFinite(n) ? n : null;
 }
 
-function topSetWeight(row) {
+// Find top-set index by max weight (first max if tie)
+function topSetIndex(row) {
   if (!row || !Array.isArray(row.weights)) return null;
-  const nums = row.weights.map(toNum).filter(v => v != null);
-  if (!nums.length) return null;
-  return Math.max(...nums);
+  const nums = row.weights.map(toNum);
+  const valid = nums.map((v, i) => ({ v, i })).filter(o => o.v != null);
+  if (!valid.length) return null;
+  let best = valid[0];
+  for (const o of valid) if (o.v > best.v) best = o;
+  return best.i;
+}
+function topSetWeight(row) {
+  const i = topSetIndex(row);
+  if (i == null) return null;
+  return toNum(row.weights[i]);
+}
+function topSetRpe(row) {
+  const i = topSetIndex(row);
+  if (i == null) return null;
+  if (!Array.isArray(row.rpes)) return null;
+  return toNum(row.rpes[i]);
 }
 
-// Backward compatibility: if older data had `weight`, convert to weights[]
+// Backward compatibility + ensure arrays match set count
 function normalizeRow(row) {
   if (!row) return row;
 
-  // Ensure weights exists
-  if (!Array.isArray(row.weights)) row.weights = [];
+  const setsCount = Math.max(1, Number(row.sets) || 1);
 
-  // Upgrade from single-weight schema if present
+  // weights
+  if (!Array.isArray(row.weights)) row.weights = [];
   if (row.weight !== undefined && row.weight !== "" && row.weights.length === 0) {
-    const s = Math.max(1, Number(row.sets) || 1);
     const w = Number(row.weight);
-    row.weights = Array.from({ length: s }, () => (isFinite(w) ? String(w) : ""));
+    row.weights = Array.from({ length: setsCount }, () => (isFinite(w) ? String(w) : ""));
     delete row.weight;
   } else if (row.weight !== undefined) {
     delete row.weight;
   }
+  if (row.weights.length < setsCount) row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
+  if (row.weights.length > setsCount) row.weights = row.weights.slice(0, setsCount);
 
-  // Ensure array length matches sets (best-effort)
-  const setsCount = Math.max(1, Number(row.sets) || 1);
-  if (row.weights.length < setsCount) {
-    row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
+  // rpes
+  if (!Array.isArray(row.rpes)) row.rpes = [];
+  if (row.rpe !== undefined && row.rpe !== "" && row.rpes.length === 0) {
+    const r = Number(row.rpe);
+    row.rpes = Array.from({ length: setsCount }, () => (isFinite(r) ? String(r) : ""));
+    delete row.rpe;
+  } else if (row.rpe !== undefined) {
+    delete row.rpe;
   }
-  if (row.weights.length > setsCount) {
-    row.weights = row.weights.slice(0, setsCount);
-  }
+  if (row.rpes.length < setsCount) row.rpes = row.rpes.concat(Array.from({ length: setsCount - row.rpes.length }, () => ""));
+  if (row.rpes.length > setsCount) row.rpes = row.rpes.slice(0, setsCount);
 
   return row;
 }
 
-function stepScore(feeling, prevRpe) {
+function stepScore(feeling, prevTopRpe) {
   let s = 0;
   if (feeling === "Pain") s -= 2;
   else if (feeling === "Sore") s -= 1;
   else if (feeling === "Great") s += 1;
 
-  if (prevRpe !== "" && prevRpe != null) {
-    const r = Number(prevRpe);
+  // Use last week's TOP SET RPE
+  if (prevTopRpe != null) {
+    const r = Number(prevTopRpe);
     if (isFinite(r)) {
       if (r >= 9) s -= 1;
       else if (r <= 7) s += 1;
@@ -163,17 +181,16 @@ function getPrevEntry(state, weekStart, session, exercise) {
 }
 
 function suggest(row, prev) {
-  if (!prev) {
-    return { display: "New: start conservative.", topWeight: "", reps: "" };
-  }
+  if (!prev) return { topWeight: "", reps: "" };
 
-  // Normalize prev too (in case old schema)
   prev = normalizeRow(prev);
 
-  const s = stepScore(row.feeling, prev.rpe);
-  const min = Number(row.min), max = Number(row.max);
+  const prevTopR = topSetRpe(prev);      // top set RPE
+  const prevTopW = topSetWeight(prev);   // top set weight
+  const s = stepScore(row.feeling, prevTopR);
 
   // Reps/Time suggestion
+  const min = Number(row.min), max = Number(row.max);
   let sugReps = prev.reps;
   const prevRepsNum = Number(prev.reps);
   if (isFinite(prevRepsNum) && isFinite(min) && isFinite(max)) {
@@ -182,21 +199,14 @@ function suggest(row, prev) {
     else sugReps = prevRepsNum;
   }
 
-  // Top set suggestion (weighted/machine)
+  // Top set weight suggestion for weighted/machine
   let sugTop = "";
-  if (row.type === "weighted" || row.type === "machine") {
+  if ((row.type === "weighted" || row.type === "machine") && prevTopW != null) {
     const inc = Number(row.inc) || 2.5;
-    const prevTop = topSetWeight(prev);
-    if (prevTop != null) {
-      sugTop = roundToInc(Math.max(0, prevTop + s * inc), inc);
-    }
+    sugTop = roundToInc(Math.max(0, prevTopW + s * inc), inc);
   }
 
-  let display = "Conservative overload.";
-  if (row.feeling === "Pain") display = "Back off today.";
-  else if (row.type === "bodyweight" || row.type === "time") display = "Chase clean reps/time.";
-
-  return { display, topWeight: sugTop, reps: sugReps };
+  return { topWeight: sugTop, reps: sugReps };
 }
 
 // ---------------- UI helpers ----------------
@@ -205,7 +215,6 @@ function $(id) {
   if (!el) throw new Error(`Missing element #${id}. Check index.html IDs.`);
   return el;
 }
-
 function makeSelect(options, value, className) {
   const sel = document.createElement("select");
   sel.className = className;
@@ -218,7 +227,6 @@ function makeSelect(options, value, className) {
   sel.value = value ?? "";
   return sel;
 }
-
 function makeInput(value, className, type = "text") {
   const inp = document.createElement("input");
   inp.type = type;
@@ -228,23 +236,25 @@ function makeInput(value, className, type = "text") {
 }
 
 function programBase(session) {
-  return (PROGRAM[session] || []).map(p => ({
-    order: p.order,
-    exercise: p.exercise,
-    type: p.type,
-    sets: p.sets,
-    reps: p.reps,
-    rpe: p.rpe,
-    weights: Array.from({ length: Math.max(1, Number(p.sets) || 1) }, () => ""),
-    feeling: "",
-    enjoyed: "",
-    notes: "",
-    min: p.min,
-    max: p.max,
-    inc: p.inc
-  }));
+  return (PROGRAM[session] || []).map(p => {
+    const setsCount = Math.max(1, Number(p.sets) || 1);
+    return {
+      order: p.order,
+      exercise: p.exercise,
+      type: p.type,
+      sets: p.sets,
+      reps: p.reps,
+      weights: Array.from({ length: setsCount }, () => ""),
+      rpes: Array.from({ length: setsCount }, () => String(p.rpe ?? "")),
+      feeling: "",
+      enjoyed: "",
+      notes: "",
+      min: p.min,
+      max: p.max,
+      inc: p.inc
+    };
+  });
 }
-
 function keyFor(weekStart, session) {
   return `${weekStart}|${session}`;
 }
@@ -267,7 +277,6 @@ function render() {
   const state = loadState();
   const weekStart = weekStartEl.value;
   const session = sessionSelect.value;
-
   const k = keyFor(weekStart, session);
 
   let rows =
@@ -275,9 +284,7 @@ function render() {
       ? window.__currentRows
       : (state.weeks?.[weekStart]?.[session]?.length ? state.weeks[weekStart][session] : programBase(session));
 
-  // Normalize rows (ensures weights[] exists and matches sets)
   rows = rows.map(r => normalizeRow(r));
-
   window.__currentKey = k;
   window.__currentRows = rows;
 
@@ -290,13 +297,17 @@ function render() {
 
     const tr = document.createElement("tr");
 
+    const setsCount = Math.max(1, Number(row.sets) || 1);
+
     const needsWeight = (row.type === "weighted" || row.type === "machine");
     const hasAnyWeight = topSetWeight(row) != null;
+
+    const allRpeFilled = Array.isArray(row.rpes) && row.rpes.length === setsCount && row.rpes.every(v => v !== "" && v != null);
 
     const missingImportant =
       (needsWeight && !hasAnyWeight) ||
       (row.reps === "" || row.reps == null) ||
-      (row.rpe === "" || row.rpe == null);
+      (!allRpeFilled);
 
     if (row.feeling === "Pain") tr.classList.add("row-pain");
     else if (missingImportant) tr.classList.add("row-soft");
@@ -322,7 +333,6 @@ function render() {
     setsInp.min = "1";
     setsInp.addEventListener("input", () => {
       row.sets = setsInp.value;
-      // normalize weights array length and re-render without losing state
       normalizeRow(row);
       render();
     });
@@ -336,29 +346,40 @@ function render() {
     td.appendChild(repsInp);
     tr.appendChild(td);
 
-    // RPE
+    // RPE per set
     td = document.createElement("td");
-    const rpeInp = makeInput(row.rpe, "cellInput cellSmall", "number");
-    rpeInp.step = "0.5";
-    rpeInp.min = "1";
-    rpeInp.max = "10";
-    rpeInp.addEventListener("input", () => { row.rpe = rpeInp.value; });
-    td.appendChild(rpeInp);
+    const rpeBox = document.createElement("div");
+    rpeBox.className = "setRpes";
+
+    // ensure length
+    row.rpes = Array.isArray(row.rpes) ? row.rpes : [];
+    if (row.rpes.length < setsCount) row.rpes = row.rpes.concat(Array.from({ length: setsCount - row.rpes.length }, () => ""));
+    if (row.rpes.length > setsCount) row.rpes = row.rpes.slice(0, setsCount);
+
+    for (let si = 0; si < setsCount; si++) {
+      const r = row.rpes[si] ?? "";
+      const rInp = makeInput(r, "cellInput cellSmall", "number");
+      rInp.step = "0.5";
+      rInp.min = "1";
+      rInp.max = "10";
+      rInp.placeholder = `R${si + 1}`;
+      rInp.addEventListener("input", () => {
+        row.rpes[si] = rInp.value;
+      });
+      rpeBox.appendChild(rInp);
+    }
+
+    td.appendChild(rpeBox);
     tr.appendChild(td);
 
-    // Per-set weights cell
+    // Weights per set
     td = document.createElement("td");
-    const box = document.createElement("div");
-    box.className = "setWeights";
+    const wBox = document.createElement("div");
+    wBox.className = "setWeights";
 
-    const setsCount = Math.max(1, Number(row.sets) || 1);
     row.weights = Array.isArray(row.weights) ? row.weights : [];
-    if (row.weights.length < setsCount) {
-      row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
-    }
-    if (row.weights.length > setsCount) {
-      row.weights = row.weights.slice(0, setsCount);
-    }
+    if (row.weights.length < setsCount) row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
+    if (row.weights.length > setsCount) row.weights = row.weights.slice(0, setsCount);
 
     for (let si = 0; si < setsCount; si++) {
       const w = row.weights[si] ?? "";
@@ -368,10 +389,10 @@ function render() {
       wInp.addEventListener("input", () => {
         row.weights[si] = wInp.value;
       });
-      box.appendChild(wInp);
+      wBox.appendChild(wInp);
     }
 
-    td.appendChild(box);
+    td.appendChild(wBox);
     tr.appendChild(td);
 
     // Feeling
@@ -422,7 +443,6 @@ function save() {
   const session = sessionSelect.value;
 
   state.weeks[weekStart] = state.weeks[weekStart] || {};
-  // Normalize before saving
   const rows = (window.__currentRows || []).map(r => normalizeRow(r));
   state.weeks[weekStart][session] = rows;
   saveState(state);
@@ -453,7 +473,6 @@ function importJSON(file) {
     try {
       const obj = JSON.parse(reader.result);
       if (!obj.weeks) throw new Error("Invalid file (missing weeks).");
-      // normalize imported
       for (const wk of Object.keys(obj.weeks)) {
         for (const sess of Object.keys(obj.weeks[wk] || {})) {
           obj.weeks[wk][sess] = (obj.weeks[wk][sess] || []).map(r => normalizeRow(r));
@@ -479,19 +498,12 @@ function resetData() {
   render();
 }
 
-// If anything crashes, show it on the page instead of blank.
 function showFatal(err) {
   document.body.innerHTML = `
     <main style="max-width:900px;margin:30px auto;padding:0 16px;font-family:Georgia,serif;">
       <h1 style="color:#9b2c2c;">Tracker crashed</h1>
-      <p style="color:#617083;">Usually a JavaScript error or missing file reference.</p>
       <pre style="white-space:pre-wrap;background:#fff;border:1px solid #e6ebf1;padding:14px;border-radius:12px;">${String(err.stack || err)}</pre>
-      <p style="color:#617083;">Checks:</p>
-      <ul style="color:#617083;">
-        <li>File names exactly: <code>index.html</code>, <code>styles.css</code>, <code>app.js</code></li>
-        <li><code>index.html</code> includes: <code>&lt;script src="./app.js" defer&gt;&lt;/script&gt;</code></li>
-        <li>Hard refresh (Ctrl+Shift+R)</li>
-      </ul>
+      <p style="color:#617083;">Check: <code>&lt;script src="./app.js" defer&gt;&lt;/script&gt;</code></p>
     </main>
   `;
 }

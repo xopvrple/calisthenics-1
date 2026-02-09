@@ -248,4 +248,51 @@ tr td:nth-child(7):empty {
   border-color: rgba(31, 78, 121, 0.35);
   box-shadow: 0 0 0 2px rgba(31, 78, 121, 0.08);
 }
+/* ===== Per-set cells (Reps / RPE / Weight / Feeling) ===== */
+
+.setReps,
+.setRpes,
+.setWeights,
+.setFeelings {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.setReps input,
+.setRpes input,
+.setWeights input {
+  width: 64px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid #e6ebf1;
+  background: #ffffff;
+}
+
+.setFeelings select {
+  width: 86px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid #e6ebf1;
+  background: #ffffff;
+}
+
+.setReps input::placeholder,
+.setRpes input::placeholder,
+.setWeights input::placeholder {
+  color: #9aa4b2;
+}
+
+.setReps input:focus,
+.setRpes input:focus,
+.setWeights input:focus,
+.setFeelings select:focus {
+  outline: none;
+  border-color: rgba(31, 78, 121, 0.35);
+  box-shadow: 0 0 0 2px rgba(31, 78, 121, 0.08);
+}
 

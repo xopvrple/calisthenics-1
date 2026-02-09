@@ -217,4 +217,35 @@ td {
 tr td:nth-child(7):empty {
   opacity: 0.6;
 }
+/* ===== Per-set weights + per-set RPE (RP-style) ===== */
+
+.setWeights,
+.setRpes {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.setWeights input,
+.setRpes input {
+  width: 64px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid #e6ebf1;
+  background: #ffffff;
+}
+
+.setWeights input::placeholder,
+.setRpes input::placeholder {
+  color: #9aa4b2;
+}
+
+.setWeights input:focus,
+.setRpes input:focus {
+  outline: none;
+  border-color: rgba(31, 78, 121, 0.35);
+  box-shadow: 0 0 0 2px rgba(31, 78, 121, 0.08);
+}
 

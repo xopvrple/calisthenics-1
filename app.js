@@ -48,7 +48,7 @@ const PROGRAM = {
   ],
 };
 
-const SET_FEELINGS = ["", "Sore", "OK", "Great", "Pain"];
+const SET_FEELINGS = ["", "Sore", "Okay", "Great", "Pain"];
 const ENJOYED = ["", "Yes", "Meh", "No"];
 
 // ---------------- storage ----------------

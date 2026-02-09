@@ -1,11 +1,12 @@
-/* Training Tracker (Minimal PPL) — stable build
-   - GitHub Pages friendly (no bundlers)
+/* Training Tracker (Minimal PPL) — RP-style per-set weights
+   - GitHub Pages friendly
    - localStorage memory
-   - conservative suggestions (Feeling + previous RPE)
-   - avoids wiping edits on re-render
+   - per-set weights: row.weights = ["40","42.5","42.5"]
+   - conservative suggestions using last week's Top Set + Feeling + previous RPE
+   - preserves in-progress edits on re-render
 */
 
-const STORAGE_KEY = "training-tracker-v1";
+const STORAGE_KEY = "training-tracker-v2-per-set-weights";
 
 const PROGRAM = {
   "Push A": [
@@ -63,7 +64,6 @@ function saveState(state) {
 }
 
 function isoMonday(d = new Date()) {
-  // Monday in local time, then format YYYY-MM-DD
   const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const day = dt.getDay(); // 0 Sun
   const diff = day === 0 ? -6 : 1 - day;
@@ -88,6 +88,47 @@ function roundToInc(value, inc) {
   const step = Number(inc);
   if (!isFinite(n) || !isFinite(step) || step <= 0) return n;
   return Math.round(n / step) * step;
+}
+
+function toNum(x) {
+  const n = Number(x);
+  return isFinite(n) ? n : null;
+}
+
+function topSetWeight(row) {
+  if (!row || !Array.isArray(row.weights)) return null;
+  const nums = row.weights.map(toNum).filter(v => v != null);
+  if (!nums.length) return null;
+  return Math.max(...nums);
+}
+
+// Backward compatibility: if older data had `weight`, convert to weights[]
+function normalizeRow(row) {
+  if (!row) return row;
+
+  // Ensure weights exists
+  if (!Array.isArray(row.weights)) row.weights = [];
+
+  // Upgrade from single-weight schema if present
+  if (row.weight !== undefined && row.weight !== "" && row.weights.length === 0) {
+    const s = Math.max(1, Number(row.sets) || 1);
+    const w = Number(row.weight);
+    row.weights = Array.from({ length: s }, () => (isFinite(w) ? String(w) : ""));
+    delete row.weight;
+  } else if (row.weight !== undefined) {
+    delete row.weight;
+  }
+
+  // Ensure array length matches sets (best-effort)
+  const setsCount = Math.max(1, Number(row.sets) || 1);
+  if (row.weights.length < setsCount) {
+    row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
+  }
+  if (row.weights.length > setsCount) {
+    row.weights = row.weights.slice(0, setsCount);
+  }
+
+  return row;
 }
 
 function stepScore(feeling, prevRpe) {
@@ -123,12 +164,16 @@ function getPrevEntry(state, weekStart, session, exercise) {
 
 function suggest(row, prev) {
   if (!prev) {
-    return { display: "New: start conservative.", weight: "", reps: "" };
+    return { display: "New: start conservative.", topWeight: "", reps: "" };
   }
+
+  // Normalize prev too (in case old schema)
+  prev = normalizeRow(prev);
 
   const s = stepScore(row.feeling, prev.rpe);
   const min = Number(row.min), max = Number(row.max);
 
+  // Reps/Time suggestion
   let sugReps = prev.reps;
   const prevRepsNum = Number(prev.reps);
   if (isFinite(prevRepsNum) && isFinite(min) && isFinite(max)) {
@@ -137,12 +182,13 @@ function suggest(row, prev) {
     else sugReps = prevRepsNum;
   }
 
-  let sugWeight = "";
+  // Top set suggestion (weighted/machine)
+  let sugTop = "";
   if (row.type === "weighted" || row.type === "machine") {
     const inc = Number(row.inc) || 2.5;
-    const prevW = Number(prev.weight);
-    if (isFinite(prevW)) {
-      sugWeight = roundToInc(Math.max(0, prevW + s * inc), inc);
+    const prevTop = topSetWeight(prev);
+    if (prevTop != null) {
+      sugTop = roundToInc(Math.max(0, prevTop + s * inc), inc);
     }
   }
 
@@ -150,7 +196,7 @@ function suggest(row, prev) {
   if (row.feeling === "Pain") display = "Back off today.";
   else if (row.type === "bodyweight" || row.type === "time") display = "Chase clean reps/time.";
 
-  return { display, weight: sugWeight, reps: sugReps };
+  return { display, topWeight: sugTop, reps: sugReps };
 }
 
 // ---------------- UI helpers ----------------
@@ -189,11 +235,13 @@ function programBase(session) {
     sets: p.sets,
     reps: p.reps,
     rpe: p.rpe,
-    weight: "",
+    weights: Array.from({ length: Math.max(1, Number(p.sets) || 1) }, () => ""),
     feeling: "",
     enjoyed: "",
     notes: "",
-    min: p.min, max: p.max, inc: p.inc
+    min: p.min,
+    max: p.max,
+    inc: p.inc
   }));
 }
 
@@ -222,11 +270,13 @@ function render() {
 
   const k = keyFor(weekStart, session);
 
-  // Keep in-progress edits for the same week/session.
   let rows =
     (window.__currentKey === k && Array.isArray(window.__currentRows) && window.__currentRows.length)
       ? window.__currentRows
       : (state.weeks?.[weekStart]?.[session]?.length ? state.weeks[weekStart][session] : programBase(session));
+
+  // Normalize rows (ensures weights[] exists and matches sets)
+  rows = rows.map(r => normalizeRow(r));
 
   window.__currentKey = k;
   window.__currentRows = rows;
@@ -241,8 +291,10 @@ function render() {
     const tr = document.createElement("tr");
 
     const needsWeight = (row.type === "weighted" || row.type === "machine");
+    const hasAnyWeight = topSetWeight(row) != null;
+
     const missingImportant =
-      (needsWeight && (row.weight === "" || row.weight == null)) ||
+      (needsWeight && !hasAnyWeight) ||
       (row.reps === "" || row.reps == null) ||
       (row.rpe === "" || row.rpe == null);
 
@@ -267,7 +319,13 @@ function render() {
     // Sets
     td = document.createElement("td");
     const setsInp = makeInput(row.sets, "cellInput cellSmall", "number");
-    setsInp.addEventListener("input", () => { row.sets = setsInp.value; });
+    setsInp.min = "1";
+    setsInp.addEventListener("input", () => {
+      row.sets = setsInp.value;
+      // normalize weights array length and re-render without losing state
+      normalizeRow(row);
+      render();
+    });
     td.appendChild(setsInp);
     tr.appendChild(td);
 
@@ -288,12 +346,32 @@ function render() {
     td.appendChild(rpeInp);
     tr.appendChild(td);
 
-    // Weight
+    // Per-set weights cell
     td = document.createElement("td");
-    const wInp = makeInput(row.weight, "cellInput cellSmall", "number");
-    wInp.step = "0.5";
-    wInp.addEventListener("input", () => { row.weight = wInp.value; });
-    td.appendChild(wInp);
+    const box = document.createElement("div");
+    box.className = "setWeights";
+
+    const setsCount = Math.max(1, Number(row.sets) || 1);
+    row.weights = Array.isArray(row.weights) ? row.weights : [];
+    if (row.weights.length < setsCount) {
+      row.weights = row.weights.concat(Array.from({ length: setsCount - row.weights.length }, () => ""));
+    }
+    if (row.weights.length > setsCount) {
+      row.weights = row.weights.slice(0, setsCount);
+    }
+
+    for (let si = 0; si < setsCount; si++) {
+      const w = row.weights[si] ?? "";
+      const wInp = makeInput(w, "cellInput cellSmall", "number");
+      wInp.step = "0.5";
+      wInp.placeholder = `S${si + 1}`;
+      wInp.addEventListener("input", () => {
+        row.weights[si] = wInp.value;
+      });
+      box.appendChild(wInp);
+    }
+
+    td.appendChild(box);
     tr.appendChild(td);
 
     // Feeling
@@ -313,8 +391,12 @@ function render() {
     // Suggested
     td = document.createElement("td");
     const parts = [];
-    if (sug.weight !== "" && sug.weight != null && isFinite(Number(sug.weight))) parts.push(`Wt: ${sug.weight}`);
-    if (sug.reps !== "" && sug.reps != null && isFinite(Number(sug.reps))) parts.push(`Reps: ${sug.reps}`);
+    if ((row.type === "weighted" || row.type === "machine") && sug.topWeight !== "" && sug.topWeight != null) {
+      parts.push(`Top Wt: ${sug.topWeight}`);
+    }
+    if (sug.reps !== "" && sug.reps != null && isFinite(Number(sug.reps))) {
+      parts.push(`Reps: ${sug.reps}`);
+    }
     td.textContent = parts.length ? parts.join(" • ") : "—";
     tr.appendChild(td);
 
@@ -340,7 +422,9 @@ function save() {
   const session = sessionSelect.value;
 
   state.weeks[weekStart] = state.weeks[weekStart] || {};
-  state.weeks[weekStart][session] = window.__currentRows || [];
+  // Normalize before saving
+  const rows = (window.__currentRows || []).map(r => normalizeRow(r));
+  state.weeks[weekStart][session] = rows;
   saveState(state);
 }
 
@@ -369,9 +453,14 @@ function importJSON(file) {
     try {
       const obj = JSON.parse(reader.result);
       if (!obj.weeks) throw new Error("Invalid file (missing weeks).");
+      // normalize imported
+      for (const wk of Object.keys(obj.weeks)) {
+        for (const sess of Object.keys(obj.weeks[wk] || {})) {
+          obj.weeks[wk][sess] = (obj.weeks[wk][sess] || []).map(r => normalizeRow(r));
+        }
+      }
       saveState(obj);
       alert("Imported.");
-      // reset in-progress cache so it reloads
       window.__currentKey = "";
       window.__currentRows = [];
       render();
@@ -395,40 +484,42 @@ function showFatal(err) {
   document.body.innerHTML = `
     <main style="max-width:900px;margin:30px auto;padding:0 16px;font-family:Georgia,serif;">
       <h1 style="color:#9b2c2c;">Tracker crashed</h1>
-      <p style="color:#617083;">This usually means a JavaScript error or a missing file reference.</p>
+      <p style="color:#617083;">Usually a JavaScript error or missing file reference.</p>
       <pre style="white-space:pre-wrap;background:#fff;border:1px solid #e6ebf1;padding:14px;border-radius:12px;">${String(err.stack || err)}</pre>
-      <p style="color:#617083;">Fixes to check:</p>
+      <p style="color:#617083;">Checks:</p>
       <ul style="color:#617083;">
-        <li>File names are exactly: <code>index.html</code>, <code>styles.css</code>, <code>app.js</code></li>
-        <li><code>index.html</code> includes: <code>&lt;script src="./app.js"&gt;&lt;/script&gt;</code></li>
+        <li>File names exactly: <code>index.html</code>, <code>styles.css</code>, <code>app.js</code></li>
+        <li><code>index.html</code> includes: <code>&lt;script src="./app.js" defer&gt;&lt;/script&gt;</code></li>
         <li>Hard refresh (Ctrl+Shift+R)</li>
       </ul>
     </main>
   `;
 }
 
-(function init() {
+document.addEventListener("DOMContentLoaded", () => {
   try {
     weekStartEl = $("weekStart");
     sessionSelect = $("sessionSelect");
     rowsEl = $("rows");
-    loadBtn = $("loadTemplate");
-    saveBtn = $("saveBtn");
-    completeWeekBtn = $("completeWeekBtn");
-    exportBtn = $("exportBtn");
-    importInput = $("importInput");
-    resetBtn = $("resetBtn");
+
+    loadBtn = document.getElementById("loadTemplate");
+    saveBtn = document.getElementById("saveBtn");
+    completeWeekBtn = document.getElementById("completeWeekBtn");
+    exportBtn = document.getElementById("exportBtn");
+    importInput = document.getElementById("importInput");
+    resetBtn = document.getElementById("resetBtn");
 
     fillSessions();
+
     weekStartEl.value = isoMonday();
     sessionSelect.value = "Push A";
 
-    loadBtn.addEventListener("click", () => { render(); });
-    saveBtn.addEventListener("click", () => { save(); alert("Saved."); });
-    completeWeekBtn.addEventListener("click", () => { save(); markWeekComplete(); });
-    exportBtn.addEventListener("click", exportJSON);
-    importInput.addEventListener("change", (e) => { if (e.target.files?.[0]) importJSON(e.target.files[0]); });
-    resetBtn.addEventListener("click", resetData);
+    if (loadBtn) loadBtn.addEventListener("click", render);
+    if (saveBtn) saveBtn.addEventListener("click", () => { save(); alert("Saved."); });
+    if (completeWeekBtn) completeWeekBtn.addEventListener("click", () => { save(); markWeekComplete(); });
+    if (exportBtn) exportBtn.addEventListener("click", exportJSON);
+    if (importInput) importInput.addEventListener("change", (e) => { if (e.target.files?.[0]) importJSON(e.target.files[0]); });
+    if (resetBtn) resetBtn.addEventListener("click", resetData);
 
     sessionSelect.addEventListener("change", render);
     weekStartEl.addEventListener("change", render);
@@ -437,5 +528,4 @@ function showFatal(err) {
   } catch (err) {
     showFatal(err);
   }
-})();
-
+});
